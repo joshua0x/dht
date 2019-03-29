@@ -1,0 +1,9 @@
+CFLAGS = -g -Wall
+LDLIBS = -lcrypt
+
+dht_crawler: dht_crawler.o dht.o
+
+all: dht_crawler
+
+clean:
+	-rm -f  dht_crawler  dht_crawler.o   dht-example.id dht.o *~ core

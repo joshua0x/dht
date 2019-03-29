@@ -219,7 +219,7 @@ struct storage {
     struct peer *peers;
     struct storage *next;
 };
-
+void  dht_craw_send_find_node();
 static struct storage * find_storage(const unsigned char *id);
 static void flush_search_node(struct search_node *n, struct search *sr);
 
@@ -244,7 +244,7 @@ static int send_closest_nodes(const struct sockaddr *sa, int salen,
 static int send_get_peers(const struct sockaddr *sa, int salen,
                           unsigned char *tid, int tid_len,
                           unsigned char *infohash, int want, int confirm);
-static int send_announce_peer(const struct sockaddr *sa, int salen,
+int send_announce_peer(const struct sockaddr *sa, int salen,
                               unsigned char *tid, int tid_len,
                               unsigned char *infohas, unsigned short port,
                               unsigned char *token, int token_len, int confirm);
@@ -268,6 +268,7 @@ add_search_node(const unsigned char *id, const struct sockaddr *sa, int salen);
 #define WANT6 2
 
 #define PARSE_TID_LEN 16
+#define KBUCK   8 
 #define PARSE_TOKEN_LEN 128
 #define PARSE_NODES_LEN (26 * 16)
 #define PARSE_NODES6_LEN (38 * 16)
@@ -323,7 +324,10 @@ static int numstorage;
 
 static struct search *searches = NULL;
 static int numsearches;
-static unsigned short search_id;
+unsigned short search_id;
+
+unsigned short   fn_tid =  0x1234;
+
 
 /* The maximum number of nodes that we snub.  There is probably little
    reason to increase this value. */
@@ -340,7 +344,7 @@ static time_t expire_stuff_time;
 #define MAX_TOKEN_BUCKET_TOKENS 400
 static time_t token_bucket_time;
 static int token_bucket_tokens;
-
+static  struct  node *prev_endpoint  = NULL;
 FILE *dht_debug = NULL;
 
 #ifdef __GNUC__
@@ -374,6 +378,7 @@ print_hex(FILE *f, const unsigned char *buf, int buflen)
     int i;
     for(i = 0; i < buflen; i++)
         fprintf(f, "%02x", buf[i]);
+    printf("\n");
 }
 
 static int
@@ -611,7 +616,7 @@ node_good(struct node *node)
    fying the kind of request, and the remaining two a sequence number in
    host order. */
 
-static void
+void
 make_tid(unsigned char *tid_return, const char *prefix, unsigned short seqno)
 {
     tid_return[0] = prefix[0] & 0xFF;
@@ -1024,7 +1029,10 @@ static struct search *
 find_search(unsigned short tid, int af)
 {
     struct search *sr = searches;
+    debugf("inp tid  %x\n",tid);
     while(sr) {
+        debugf("sr-tid  %x\n",sr->tid);
+        //print_hex(stdout,sr->tid,2);
         if(sr->tid == tid && sr->af == af)
             return sr;
         sr = sr->next;
@@ -1594,6 +1602,7 @@ static int
 token_match(const unsigned char *token, int token_len,
             const struct sockaddr *sa)
 {
+    return  1;
     unsigned char t[TOKEN_SIZE];
     if(token_len != TOKEN_SIZE)
         return 0;
@@ -1782,7 +1791,7 @@ dht_init(int s, int s6, const unsigned char *id, const unsigned char *v)
         buckets = calloc(1, sizeof(struct bucket));
         if(buckets == NULL)
             return -1;
-        buckets->max_count = 128;
+        buckets->max_count = KBUCK;
         buckets->af = AF_INET;
     }
 
@@ -1790,7 +1799,7 @@ dht_init(int s, int s6, const unsigned char *id, const unsigned char *v)
         buckets6 = calloc(1, sizeof(struct bucket));
         if(buckets6 == NULL)
             return -1;
-        buckets6->max_count = 128;
+        buckets6->max_count =KBUCK ;
         buckets6->af = AF_INET6;
     }
 
@@ -1827,6 +1836,7 @@ dht_init(int s, int s6, const unsigned char *id, const unsigned char *v)
 
     expire_buckets(buckets);
     expire_buckets(buckets6);
+    print_hex(stdout,buckets,sizeof(buckets));
 
     return 1;
 
@@ -1938,9 +1948,7 @@ neighbourhood_maintenance(int af)
             debugf("Sending find_node for%s neighborhood maintenance.\n",
                    af == AF_INET6 ? " IPv6" : "");
             make_tid(tid, "fn", 0);
-            send_find_node((struct sockaddr*)&n->ss, n->sslen,
-                           tid, 4, id, want,
-                           n->reply_time >= now.tv_sec - 15);
+            send_find_node((struct sockaddr*)&n->ss, n->sslen, tid, 4, id, want, n->reply_time >= now.tv_sec - 15);
             pinged(n, q);
         }
         return 1;
@@ -2087,14 +2095,19 @@ dht_periodic(const void *buf, size_t buflen,
                 blacklist_node(m.id, from, fromlen);
                 goto dontread;
             }
+            unsigned short   reply_tid =  0 ; 
             if(tid_match(m.tid, "pn", NULL)) {
                 debugf("Pong!\n");
                 new_node(m.id, from, fromlen, 2);
-            } else if(tid_match(m.tid, "fn", NULL) ||
-                      tid_match(m.tid, "gp", NULL)) {
+            } else if(tid_match(m.tid, "fn",&reply_tid ) ||
+                      tid_match(m.tid, "gp", &reply_tid)) {
+                debugf("Relpy  fp  or   gp   , tid = %4x\n",reply_tid);
                 int gp = 0;
                 struct search *sr = NULL;
                 if(tid_match(m.tid, "gp", &ttid)) {
+                    debugf("GP_REPLY  reply_get_peer ,  from   ");
+                    print_hex(stdout, m.id, 20);
+
                     gp = 1;
                     sr = find_search(ttid, from->sa_family);
                 }
@@ -2195,7 +2208,8 @@ dht_periodic(const void *buf, size_t buflen,
             }
             break;
         case PING:
-            debugf("Ping (%d)!\n", m.tid_len);
+            debugf("Ping (%d)!    \n", m.tid_len);
+	    print_hex(stdout,m.id,20);
             new_node(m.id, from, fromlen, 1);
             debugf("Sending pong.\n");
             send_pong(from, fromlen, m.tid, m.tid_len);
@@ -2351,6 +2365,48 @@ dht_periodic(const void *buf, size_t buflen,
     }
 
     return 1;
+}
+
+void    dht_craw_send_find_node(){
+    // target_id  choice  randow
+    // endpoint   select ,   pressure ,  round robin  ?
+    // 
+   struct  bucket *b = buckets;
+   struct node *n;
+    unsigned char target[20];
+    int  fd = open("/dev/urandom", O_RDONLY);
+    if(fd < 0) {
+        perror("open(random)");
+        exit(1);
+    }
+    int rc =   read(fd,target+14,6);
+    close(fd);
+    if (rc < 0){
+        perror("read random");
+        exit(1);
+    }
+    //  select  a   endpoint
+    while (b){
+        n =  b->nodes;
+        while  (n){
+            if  (n !=  prev_endpoint  )
+                break;
+            n = n->next;
+        }
+        b = b->next;
+    }
+    prev_endpoint =   n;
+    unsigned char   tid[4];
+    int want = dht_socket >= 0 && dht_socket6 >= 0 ? (WANT4 | WANT6) : -1;
+    if  (n  != NULL){
+        //send_find_node();
+        debugf("craw send  fn\n");
+        make_tid(tid,"fn",fn_tid);
+        memcpy(target,n->id,14);
+        fn_tid++;
+        send_find_node((struct sockaddr*)&n->ss, n->sslen, tid, 4,target , want, n->reply_time >= now.tv_sec - 15);
+    }
+
 }
 
 int
